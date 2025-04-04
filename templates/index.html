@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic Book Recommender</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Semantic Book Recommender</h1>
+            <p>Find books based on your interests using AI-powered semantic search</p>
+        </header>
+
+        <div class="search-container">
+            <div class="search-box">
+                <textarea id="query" placeholder="e.g., A story about forgiveness and redemption set in a small town"></textarea>
+            </div>
+            <div class="filters">
+                <div class="filter-group">
+                    <label for="category">Category:</label>
+                    <select id="category">
+                        {% for category in categories %}
+                        <option value="{{ category }}">{{ category }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="tone">Emotional Tone:</label>
+                    <select id="tone">
+                        {% for tone in tones %}
+                        <option value="{{ tone }}">{{ tone }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button id="search-button" class="search-btn">Find Books</button>
+            </div>
+        </div>
+
+        <div class="loading-container" id="loading">
+            <div class="spinner"></div>
+            <p>Searching for books...</p>
+        </div>
+
+        <div class="results-container">
+            <h2>Recommendations</h2>
+            <div id="results" class="book-grid"></div>
+        </div>
+
+        <!-- Book Details Modal -->
+        <div id="book-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <div class="modal-body">
+                    <div class="modal-image">
+                        <img id="modal-thumbnail" src="" alt="Book cover">
+                    </div>
+                    <div class="modal-info">
+                        <h2 id="modal-title"></h2>
+                        <p id="modal-authors"></p>
+                        <div class="modal-category" id="modal-category"></div>
+                        <div class="modal-emotions" id="modal-emotions"></div>
+                        <p id="modal-description"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>LLM Semantic Book Recommender &copy; 2023</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
