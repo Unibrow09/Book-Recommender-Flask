@@ -12,9 +12,10 @@ This project is a semantic book recommendation system that uses natural language
 
 ## Project Structure
 ```
-mid-sem/
 ├── app.py                  # Main Flask application entry point
+├── requirements.txt        # Project dependencies
 ├── src/                    # Source code directory
+│   ├── __init__.py         # Package initialization
 │   ├── data/               # Data processing modules
 │   │   ├── __init__.py
 │   │   └── data_processor.py
@@ -64,7 +65,6 @@ mid-sem/
 
 4. Run the application:
    ```
-   cd mid-sem
    python app.py
    ```
 
