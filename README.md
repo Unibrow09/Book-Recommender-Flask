@@ -48,7 +48,7 @@ This project is a semantic book recommendation system that uses natural language
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/LLM-Semantic-Book-Recommender.git
+   git clone https://github.com/Unibrow09/Book-Recommender.git
    cd LLM-Semantic-Book-Recommender
    ```
 
