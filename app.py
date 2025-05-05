@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import TextLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_chroma import Chroma
+from langchain_pinecone import PineconeVectorStore
+from pinecone import Pinecone
+import time
 
 # Load environment variables
 load_dotenv()
@@ -23,35 +25,93 @@ books["large_thumbnail"] = np.where(
     books["large_thumbnail"],
 )
 
-# Define the persist directory for storing embeddings
-PERSIST_DIRECTORY = "chroma_db"
+# Convert isbn13 to string type to ensure matching works properly
+books['isbn13'] = books['isbn13'].astype(str)
+
+# Define the index name for Pinecone
+INDEX_NAME = os.environ.get("PINECONE_INDEX_NAME", "book-recommendations")
 
 # Setup embeddings and database
 def setup_db():
-    # Check if the database already exists
-    if os.path.exists(PERSIST_DIRECTORY):
-        print("Loading existing embeddings from disk...")
-        # Load the existing database from disk
-        db_books = Chroma(
-            persist_directory=PERSIST_DIRECTORY,
-            embedding_function=OpenAIEmbeddings()
+    # Initialize Pinecone
+    pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+    
+    # Check if index exists
+    if INDEX_NAME not in pc.list_indexes().names():
+        print(f"Index {INDEX_NAME} not found. Please create it in the Pinecone dashboard.")
+    
+    # Create the embedding model
+    embeddings = OpenAIEmbeddings()
+    
+    # Check if the index is empty
+    index = pc.Index(INDEX_NAME)
+    stats = index.describe_index_stats()
+    vector_count = stats['total_vector_count']
+    
+    if vector_count > 0:
+        print(f"Loading existing embeddings from Pinecone ({vector_count} vectors)...")
+        # Connect to the existing database
+        db_books = PineconeVectorStore(
+            index_name=INDEX_NAME,
+            embedding=embeddings
         )
     else:
         print("Creating new embeddings database...")
         # Create and persist a new database
         # Use UTF-8 encoding to handle special characters
         raw_documents = TextLoader("tagged_description.txt", encoding="utf-8").load()
+        # Important: Keep the same chunking settings as in the Chroma version
         text_splitter = CharacterTextSplitter(separator="\n", chunk_size=0, chunk_overlap=0)
         documents = text_splitter.split_documents(raw_documents)
         
-        # Create the database with persist_directory specified
-        db_books = Chroma.from_documents(
-            documents, 
-            OpenAIEmbeddings(),
-            persist_directory=PERSIST_DIRECTORY
-        )
+        print(f"Split into {len(documents)} chunks")
         
+        # Process in batches to avoid hitting message size limits
+        batch_size = 50
+        total_batches = (len(documents) + batch_size - 1) // batch_size
+        
+        for i in range(0, len(documents), batch_size):
+            end_idx = min(i + batch_size, len(documents))
+            current_batch = documents[i:end_idx]
+            print(f"Processing batch {(i//batch_size)+1}/{total_batches} (chunks {i}-{end_idx-1})...")
+            
+            try:
+                if i == 0:
+                    # First batch - create vector store
+                    db_books = PineconeVectorStore.from_documents(
+                        current_batch,
+                        embeddings,
+                        index_name=INDEX_NAME
+                    )
+                else:
+                    # Subsequent batches - add to existing store
+                    db_books.add_documents(current_batch)
+                
+                # Add a small delay between batches to avoid rate limits
+                time.sleep(1)
+            except Exception as e:
+                print(f"Error processing batch: {e}")
+                # If error occurs on first batch, raise it
+                if i == 0:
+                    raise e
+                # Otherwise continue with next batch
+                time.sleep(2)
+                continue
+    
     return db_books
+
+# Helper function to safely extract ISBN from text
+def safe_extract_isbn(text):
+    try:
+        # Extract first token from text which should be the ISBN
+        isbn_text = text.strip('"').split()[0]
+        
+        # Return the ISBN as a string to match the dataframe's data type
+        return str(isbn_text)
+    except (ValueError, IndexError):
+        # If we can't parse the ISBN, return None
+        print(f"Warning: Could not extract ISBN from: {text[:50]}...")
+        return None
 
 # Initialize the database
 db_books = setup_db()
@@ -64,38 +124,66 @@ def retrieve_semantic_recommendations(
         query: str,
         category: str = None,
         tone: str = None,
-        initial_top_k: int = 50,
+        initial_top_k: int = 100,  # Increased from 50 to get more potential matches
         final_top_k: int = 16,
 ) -> pd.DataFrame:
 
+    # Get semantic search results
     recs = db_books.similarity_search(query, k=initial_top_k)
-    books_list = [int(rec.page_content.strip('"').split()[0]) for rec in recs]
-    book_recs = books[books["isbn13"].isin(books_list)].head(initial_top_k)
+    
+    # Extract ISBNs with error handling
+    books_list = []
+    for rec in recs:
+        isbn = safe_extract_isbn(rec.page_content)
+        if isbn is not None:
+            books_list.append(isbn)
+    
+    print(f"Query: '{query}', Found {len(books_list)} potential ISBNs")
+    
+    # Filter book recommendations - ensure we get books
+    book_recs = books[books["isbn13"].isin(books_list)]
+    
+    # If no books found, print debug info
+    if len(book_recs) == 0:
+        print(f"No books found for query: {query}")
+        print(f"ISBNs extracted: {books_list[:10]}...")
+        # Debug: Print a sample of ISBNs from the database for comparison
+        print(f"Sample ISBNs in database: {books['isbn13'].head(5).tolist()}")
+        return pd.DataFrame()  # Return empty dataframe
+    
+    print(f"Found {len(book_recs)} matching books in database")
+    
+    # Apply category filter if specified
+    if category != "All" and not book_recs.empty:
+        category_filtered = book_recs[book_recs["simple_categories"] == category]
+        # Only use the category filter if it didn't filter out all books
+        if not category_filtered.empty:
+            book_recs = category_filtered
+            print(f"After category filter '{category}': {len(book_recs)} books")
+        else:
+            print(f"Category filter '{category}' would remove all books, ignoring filter")
 
-    if category != "All":
-        book_recs = book_recs[book_recs["simple_categories"] == category].head(final_top_k)
-    else:
-        book_recs = book_recs.head(final_top_k)
-
-    if tone == "Happy":
-        book_recs.sort_values(by="joy", ascending=False, inplace=True)
-    elif tone == "Surprising":
-        book_recs.sort_values(by="surprise", ascending=False, inplace=True)
-    elif tone == "Angry":
-        book_recs.sort_values(by="anger", ascending=False, inplace=True)
-    elif tone == "Suspenseful":
-        book_recs.sort_values(by="fear", ascending=False, inplace=True)
-    elif tone == "Sad":
-        book_recs.sort_values(by="sadness", ascending=False, inplace=True)
+    # Limit to final_top_k books
+    book_recs = book_recs.head(final_top_k)
+    
+    # Sort by emotional tone if specified
+    if not book_recs.empty:
+        if tone == "Happy":
+            book_recs.sort_values(by="joy", ascending=False, inplace=True)
+        elif tone == "Surprising":
+            book_recs.sort_values(by="surprise", ascending=False, inplace=True)
+        elif tone == "Angry":
+            book_recs.sort_values(by="anger", ascending=False, inplace=True)
+        elif tone == "Suspenseful":
+            book_recs.sort_values(by="fear", ascending=False, inplace=True)
+        elif tone == "Sad":
+            book_recs.sort_values(by="sadness", ascending=False, inplace=True)
 
     return book_recs
 
 @app.route('/')
 def index():
     # Serve the index.html file from the static directory
-    # Pass data to JavaScript by appending it as URL parameters
-    categories_str = ','.join(categories)
-    tones_str = ','.join(tones)
     return send_from_directory('static', 'index.html')
 
 @app.route('/categories')
@@ -110,7 +198,14 @@ def recommend():
     category = data.get('category', 'All')
     tone = data.get('tone', 'All')
     
+    print(f"Processing recommendation request: query='{query}', category='{category}', tone='{tone}'")
+    
     recommendations = retrieve_semantic_recommendations(query, category, tone)
+    
+    # Debug output for empty results
+    if recommendations.empty:
+        print("No recommendations found!")
+        return jsonify({"recommendations": []})
     
     # Format the results
     results = []
@@ -145,6 +240,7 @@ def recommend():
             }
         })
     
+    print(f"Returning {len(results)} recommendations")
     return jsonify({"recommendations": results})
 
 if __name__ == '__main__':
